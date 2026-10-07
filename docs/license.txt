@@ -1,0 +1,10 @@
+UEFN Mannequin - Licenseterms(Standard License)  https://fab.com/s/53c1f58fbb68
+Shooter Essentials - PolyPack Starter - Low Poly Assets - Licenseterms(Standard License)  https://fab.com/s/0668a916ac9d
+Stylized Sword Trails VFX - Licenseterms(Standard License) https://fab.com/s/59a6d9383ee1
+
+[캐릭터 애니메이션]
+Lyra Starter Game - Licenseterms(Standard License)  https://fab.com/s/3fe3f994dd6d
+
+[.gitignore에 추가된 재배포 불가 외부 에셋]
+PSX Sewer Pack - Licenseterms(Standard License)  https://fab.com/s/ac73529d1076
+Agent | PS2 Style - Creative Commons Attribution (CC BY 4.0)  https://fab.com/s/33b9c0c29343
