@@ -1,0 +1,541 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "VremMeleeComponent.h"
+#include "VremMeleeWeaponDefinition.h"
+#include "Vrem/VremLogChannels.h"
+#include "Engine/DamageEvents.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Character.h"
+#include "DrawDebugHelpers.h"
+#include "Kismet/GameplayStatics.h"
+#include "NiagaraFunctionLibrary.h"
+#include "Vrem/Equipment/Weapon/VremWeaponHandlerInterface.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Camera/CameraShakeBase.h"
+
+// 디버그 CVar (무기 시스템과 네임스페이스 일관성 유지)
+static TAutoConsoleVariable<int32> CVarDebugMeleeAttack(
+    TEXT("vrem.DebugMeleeAttack"),
+    0,
+    TEXT("Enable Melee Attack Debug\n0: Off\n1: On"),
+    ECVF_Cheat);
+
+UVremMeleeComponent::UVremMeleeComponent()
+{
+    SetIsReplicatedByDefault(true);
+    PrimaryComponentTick.bCanEverTick = false;
+}
+
+AActor* UVremMeleeComponent::GetWeaponOwner() const
+{
+    return GetOwner() ? GetOwner()->GetOwner() : nullptr;
+}
+
+AController* UVremMeleeComponent::GetInstigatorController() const
+{
+    APawn* Pawn = Cast<APawn>(GetWeaponOwner());
+    return Pawn ? Pawn->GetController() : nullptr;
+}
+
+void UVremMeleeComponent::TryMeleeAttack()
+{
+    if (IsValid(MeleeDefinition) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("TryMeleeAttack: MeleeDefinition is null"));
+        return;
+    }
+
+    if (MeleeDefinition->GetComboCount() == 0)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("TryMeleeAttack: No attack sequences defined"));
+        return;
+    }
+
+    if (bIsAttacking && bCanCancel == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("TryMeleeAttack: already bIsAttacking is true and Can't Cancel yet"));
+        return;
+    }
+
+    ExecuteMeleeAttack();
+}
+
+void UVremMeleeComponent::TryCancelMeleeAttack()
+{
+    if (bIsAttacking == false)
+    {
+        return;
+    }
+
+    if (CanCancel() == false)
+    {
+        return;
+    }
+
+    FTimerManager& TM = GetWorld()->GetTimerManager();
+    TM.ClearTimer(AttackDurationTimer);
+    TM.ClearTimer(CancelTimeTimer);
+    TM.ClearTimer(HitTimer);
+    TM.ClearTimer(SwingShakeTimer);
+
+    bIsAttacking = false;
+    bCanCancel = false;
+    CurrentComboIndex = 0;
+
+    if (IVremWeaponHandler* Handler = Cast<IVremWeaponHandler>(GetWeaponOwner()))
+    {
+        Handler->OnMeleeAttackFinished();
+    }
+
+    AActor* Owner = GetOwner();
+    if (IsValid(Owner))
+    {
+        CancelMontageLocally();
+        if (Owner->HasAuthority())
+        {
+            DoCancelMeleeAttack();
+        }
+        else if (Owner->GetLocalRole() == ROLE_AutonomousProxy)
+        {
+            ServerCancelMeleeAttack();
+        }
+    }
+}
+
+void UVremMeleeComponent::ExecuteMeleeAttack()
+{
+    UE_LOG(LogVremWeapon, Warning, TEXT("ExecuteMeleeAttack"));
+
+    APlayerController* PC = Cast<APlayerController>(GetInstigatorController());
+    if (IsValid(PC) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("ExecuteMeleeAttack: Controller is null"));
+        return;
+    }
+
+    if (MeleeDefinition->GetSequenceAt(CurrentComboIndex) == nullptr)
+    {
+        CurrentComboIndex = 0;
+    }
+
+    const int32 SequenceIndex = CurrentComboIndex;
+    const FAttackSequence* Sequence = MeleeDefinition->GetSequenceAt(SequenceIndex);
+
+    // 서버에 판정 위임
+    ServerMeleeAttack(SequenceIndex);
+
+    // 로컬 상태 업데이트
+    bIsAttacking = true;
+    bCanCancel = false;
+
+    APawn* WeaponOwner = Cast<APawn>(GetWeaponOwner());
+    if (IsValid(WeaponOwner) && WeaponOwner->IsLocallyControlled())
+    {
+        PlayMontageLocally(CurrentComboIndex);
+
+        FTimerManager& TimerManager = GetWorld()->GetTimerManager();
+        TimerManager.ClearTimer(SwingShakeTimer);
+
+        const float SwingShakeFireTime = FMath::Max(0.001f, Sequence->HitTime - Sequence->SwingShakeLeadTime);
+
+        FTimerDelegate ShakeDelegate;
+        ShakeDelegate.BindUObject(this, &UVremMeleeComponent::PlayCameraShakeLocal, Sequence->SwingCameraShake);
+        TimerManager.SetTimer(SwingShakeTimer, ShakeDelegate, SwingShakeFireTime, false);
+    }
+
+    // 기존 타이머 클리어
+    FTimerManager& TimerManager = GetWorld()->GetTimerManager();
+    TimerManager.ClearTimer(AttackDurationTimer);
+    TimerManager.ClearTimer(CancelTimeTimer);
+
+    if (IVremWeaponHandler* Handler = Cast<IVremWeaponHandler>(GetWeaponOwner()))
+    {
+        Handler->OnMeleeAttackStarted(SequenceIndex);
+    }
+
+    // 타이머들 세팅
+    FTimerDelegate DurationDelegate;
+    DurationDelegate.BindUObject(this, &UVremMeleeComponent::OnAttackDurationFinished);
+    TimerManager.SetTimer(
+        AttackDurationTimer, DurationDelegate,
+        Sequence->AttackDuration, false);
+
+    FTimerDelegate CancelDelegate;
+    CancelDelegate.BindUObject(this, &UVremMeleeComponent::OnCancelTimeStarted);
+    TimerManager.SetTimer(
+        CancelTimeTimer, CancelDelegate,
+        Sequence->CancelTime, false);
+
+    // 콤보 인덱스 증가 (마지막이면 리셋)
+    CurrentComboIndex = (CurrentComboIndex + 1) % MeleeDefinition->GetComboCount();
+}
+
+void UVremMeleeComponent::OnAttackDurationFinished()
+{
+    bIsAttacking = false;
+    bCanCancel = false;
+    CurrentComboIndex = 0;
+
+    if (IVremWeaponHandler* Handler = Cast<IVremWeaponHandler>(GetWeaponOwner()))
+    {
+        Handler->OnMeleeAttackFinished();
+    }
+}
+
+void UVremMeleeComponent::OnCancelTimeStarted()
+{
+    bCanCancel = true;
+}
+
+void UVremMeleeComponent::OnHitTimeStarted()
+{
+    if (LastAttackComboIndex == INDEX_NONE)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("OnHitTimeReached: no cached attack info"));
+        return;
+    }
+
+    PerformMeleeHitDetection(LastAttackComboIndex);
+}
+
+void UVremMeleeComponent::ApplyHitStop(AActor* Victim, float Scale, float Duration)
+{
+    AActor* Attacker = GetWeaponOwner();
+    if (IsValid(Attacker) == false)
+    {
+        return;
+    }
+
+    FTimerManager& TimerManager = GetWorld()->GetTimerManager();
+    TimerManager.ClearTimer(HitStopRestoreTimer);
+    RestoreHitStop();
+
+    Attacker->CustomTimeDilation = Scale;
+    HitStopAttacker = Attacker;
+
+    ACharacter* VictimChar = Cast<ACharacter>(Victim);
+    if (IsValid(VictimChar))
+    {
+        USkeletalMeshComponent* VictimMesh = VictimChar->GetMesh();
+        if (IsValid(VictimMesh))
+        {
+            VictimMesh->GlobalAnimRateScale = Scale;
+            HitStopVictim = VictimMesh;
+        }
+    }
+
+    FTimerDelegate RestoreDelegate;
+    RestoreDelegate.BindUObject(this, &UVremMeleeComponent::RestoreHitStop);
+    TimerManager.SetTimer(HitStopRestoreTimer, RestoreDelegate, Duration, false);
+}
+
+void UVremMeleeComponent::RestoreHitStop()
+{
+    if (HitStopAttacker.IsValid())
+    {
+        HitStopAttacker->CustomTimeDilation = 1.f;
+    }
+
+    if (HitStopVictim.IsValid())
+    {
+        HitStopVictim->GlobalAnimRateScale = 1.f;
+    }
+
+    HitStopAttacker.Reset();
+    HitStopVictim.Reset();
+    
+}
+
+void UVremMeleeComponent::ServerMeleeAttack_Implementation(int32 ComboIndex)
+{
+    // 기존 타이머 클리어
+    GetWorld()->GetTimerManager().ClearTimer(HitTimer);
+
+    // 임팩트 시점에 사용할 정보 캐시
+    LastAttackComboIndex = ComboIndex;
+
+    // HitTime 후 히트 판정 발동
+    const FAttackSequence* Sequence = IsValid(MeleeDefinition) ? MeleeDefinition->GetSequenceAt(ComboIndex) : nullptr;
+    if (Sequence)
+    {
+        FTimerDelegate HitDelegate;
+        HitDelegate.BindUObject(this, &UVremMeleeComponent::OnHitTimeStarted);
+        GetWorld()->GetTimerManager().SetTimer(
+            HitTimer, HitDelegate, Sequence->HitTime, false);
+    }
+
+    MulticastOnMeleeAttack(ComboIndex);
+}
+
+void UVremMeleeComponent::PerformMeleeHitDetection(int32 ComboIndex)
+{
+    if (IsValid(MeleeDefinition) == false)
+    {
+        return;
+    }
+
+    const FAttackSequence* Sequence = MeleeDefinition->GetSequenceAt(ComboIndex);
+    if (Sequence == nullptr)
+    {
+        return;
+    }
+
+    AActor* WeaponOwner = GetWeaponOwner();
+    if (!IsValid(WeaponOwner))
+    {
+        return;
+    }
+
+    const bool bShowDebug = CVarDebugMeleeAttack.GetValueOnGameThread() > 0;
+
+    const FVector TraceStart = WeaponOwner->GetActorLocation();
+    const FVector TraceEnd = TraceStart + WeaponOwner->GetActorForwardVector() * Sequence->Range;
+
+    FCollisionQueryParams QueryParams;
+    QueryParams.AddIgnoredActor(GetOwner());              // EquipmentActor
+    QueryParams.AddIgnoredActor(GetOwner()->GetOwner());  // Character
+
+    FHitResult HitResult;
+    const bool bHit = GetWorld()->SweepSingleByChannel(
+        HitResult,
+        TraceStart,
+        TraceEnd,
+        FQuat::Identity,
+        ECC_Visibility,
+        FCollisionShape::MakeSphere(Sequence->TraceRadius),
+        QueryParams
+    );
+
+    if (bShowDebug)
+    {
+        DrawDebugCapsule(
+            GetWorld(),
+            (TraceStart + TraceEnd) * 0.5f,
+            (TraceEnd - TraceStart).Size() * 0.5f + Sequence->TraceRadius,
+            Sequence->TraceRadius,
+            FRotationMatrix::MakeFromZ(WeaponOwner->GetActorForwardVector()).ToQuat(),
+            bHit ? FColor::Green : FColor::Red,
+            false, 1.f, 0, 1.f);
+    }
+
+    if (bHit && IsValid(HitResult.GetActor()))
+    {
+        FPointDamageEvent DamageEvent;
+        DamageEvent.HitInfo = HitResult;
+        DamageEvent.ShotDirection = WeaponOwner->GetActorForwardVector();
+
+        HitResult.GetActor()->TakeDamage(
+            Sequence->Damage,
+            DamageEvent,
+            GetInstigatorController(),
+            GetOwner());
+
+        UE_LOG(LogVremWeapon, Log, TEXT("Melee hit: %s (ComboIndex=%d, Damage=%.1f)"),
+            *HitResult.GetActor()->GetName(), ComboIndex, Sequence->Damage);
+
+        MulticastOnMeleeHitConfirmed(ComboIndex, HitResult.GetActor(), HitResult.ImpactPoint, HitResult.ImpactNormal);
+    }
+}
+
+void UVremMeleeComponent::PlayCameraShakeLocal(TSubclassOf<UCameraShakeBase> ShakeClass)
+{
+    if (ShakeClass == nullptr)
+    {
+        return;
+    }
+
+    APawn* Pawn = Cast<APawn>(GetWeaponOwner());
+    if (IsValid(Pawn) == false)
+    {
+        return;
+    }
+
+    APlayerController* PC = Cast<APlayerController>(Pawn->GetController());
+    if (IsValid(PC) == false)
+    {
+        return;
+    }
+
+    PC->ClientStartCameraShake(ShakeClass);
+}
+
+void UVremMeleeComponent::MulticastOnMeleeAttack_Implementation(int32 ComboIndex)
+{
+    ACharacter* WeaponOwner = Cast<ACharacter>(GetWeaponOwner());
+    if (IsValid(WeaponOwner) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("MulticastOnMeleeAttack_Implementation: WeaponOwner is invalid"));
+        return;
+    }
+
+    APawn* OwnerPawn = Cast<APawn>(WeaponOwner);
+    const bool bIsLocal = IsValid(OwnerPawn) && OwnerPawn->IsLocallyControlled();
+    if (IsValid(OwnerPawn) && OwnerPawn->IsLocallyControlled() == false)
+    {
+        PlayMontageLocally(ComboIndex);
+    }
+
+    if (IsValid(MeleeDefinition))
+    {
+        const FAttackSequence* Sequence = MeleeDefinition->GetSequenceAt(ComboIndex);
+        if (Sequence && IsValid(Sequence->SwingSound))
+        {
+            UGameplayStatics::SpawnSoundAttached(Sequence->SwingSound, WeaponOwner->GetRootComponent());
+        }
+    }
+}
+
+void UVremMeleeComponent::MulticastOnMeleeHitConfirmed_Implementation(int32 ComboIndex, AActor* HitActor, FVector_NetQuantize HitLocation, FVector_NetQuantizeNormal HitNormal)
+{
+    if (IsValid(MeleeDefinition) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("MulticastOnMeleeHitConfirmed_Implementation: MeleeDefinition is invalid"));
+        return;
+    }
+
+    const FAttackSequence* Sequence = MeleeDefinition->GetSequenceAt(ComboIndex);
+    if (Sequence == nullptr)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("MulticastOnMeleeHitConfirmed_Implementation: No AttackSequence at Index : [%d]"), ComboIndex);
+        return;
+    }
+
+    UWorld* World = GetWorld();
+    if (IsValid(Sequence->HitImpactData.HitImpactFX))
+    {
+        const FQuat ImpactQuat = FVector(HitNormal).Rotation().Quaternion();
+        const FQuat OffsetQuat = Sequence->HitImpactData.HitImpactFXRotationOffset.Quaternion();
+        const FRotator FinalRotation = (ImpactQuat * OffsetQuat).Rotator();
+
+        UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+            World,
+            Sequence->HitImpactData.HitImpactFX,
+            HitLocation + Sequence->HitImpactData.HitImpactFXLocationOffset,
+            FinalRotation,
+            Sequence->HitImpactData.HitImpactFXScale);
+    }
+
+    if (IsValid(Sequence->HitImpactData.HitImpactSound))
+    {
+        UGameplayStatics::PlaySoundAtLocation(World, Sequence->HitImpactData.HitImpactSound, HitLocation);
+    }
+
+    if (Sequence->HitCameraShake)
+    {
+        AActor* Attacker = GetWeaponOwner();
+        if (IsValid(Attacker))
+        {
+            APawn* AttackerPawn = Cast<APawn>(Attacker);
+            const bool bIsLocal = IsValid(AttackerPawn) && AttackerPawn->IsLocallyControlled();
+            if (bIsLocal)
+            {
+                APlayerController* PC = Cast<APlayerController>(AttackerPawn->GetController());
+                if (IsValid(PC))
+                {
+                    PlayCameraShakeLocal(Sequence->HitCameraShake);
+                }
+            }
+        }
+    }
+
+    if (Sequence->HitStopDuration > 0.f)
+    {
+        ApplyHitStop(HitActor, Sequence->HitStopScale, Sequence->HitStopDuration);
+    }
+}
+
+void UVremMeleeComponent::ServerCancelMeleeAttack_Implementation()
+{
+    DoCancelMeleeAttack();
+}
+
+void UVremMeleeComponent::MulticastOnCancelMeleeAttack_Implementation()
+{
+    ACharacter* WeaponOwner = Cast<ACharacter>(GetWeaponOwner());
+    if (IsValid(WeaponOwner) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("MulticastOnMeleeAttack_Implementation: WeaponOwner is invalid"));
+        return;
+    }
+
+    APawn* OwnerPawn = Cast<APawn>(WeaponOwner);
+    const bool bIsLocal = IsValid(OwnerPawn) && OwnerPawn->IsLocallyControlled();
+    if (bIsLocal == false)
+    {
+        CancelMontageLocally();
+    }
+}
+
+void UVremMeleeComponent::DoCancelMeleeAttack()
+{
+    check(GetOwner()->HasAuthority());
+
+    FTimerManager& TimerManager = GetWorld()->GetTimerManager();
+    TimerManager.ClearTimer(AttackDurationTimer);
+    TimerManager.ClearTimer(CancelTimeTimer);
+    TimerManager.ClearTimer(HitTimer);
+
+    MulticastOnCancelMeleeAttack();
+}
+
+void UVremMeleeComponent::PlayMontageLocally(int32 ComboIndex)
+{
+    if (IsValid(MeleeDefinition) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("PlayMontageLocally: MeleeDefinition is invalid"));
+        return;
+    }
+
+    const FAttackSequence* Sequence = MeleeDefinition->GetSequenceAt(ComboIndex);
+    if (Sequence == nullptr || Sequence->AttackMontage == nullptr)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("PlayMontageLocally: Sequence or attackmontage is nullptr"));
+        return;
+    }
+
+    ACharacter* WeaponOwner = Cast<ACharacter>(GetWeaponOwner());
+    if (IsValid(WeaponOwner) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("PlayMontageLocally: WeaponOwner is Invalid or not character"));
+        return;
+    }
+
+    WeaponOwner->PlayAnimMontage(Sequence->AttackMontage);
+}
+
+
+void UVremMeleeComponent::CancelMontageLocally()
+{
+    ACharacter* WeaponOwner = Cast<ACharacter>(GetWeaponOwner());
+    if (IsValid(WeaponOwner) == false)
+    {
+        UE_LOG(LogVremWeapon, Warning, TEXT("PlayMontageLocally: WeaponOwner is Invalid or not character"));
+        return;
+    }
+
+    WeaponOwner->StopAnimMontage();
+}
+
+#if WITH_AUTOMATION_WORKER
+
+void UVremMeleeComponent::SimulateAttackStart_ForTest()
+{
+    if (IsValid(MeleeDefinition) == false || MeleeDefinition->GetComboCount() == 0)
+    {   
+        return;
+    }
+
+    // TryMeleeAttack() 의 차단 조건과 같아야 한다. bIsAttacking 만 보면
+    // 캔슬 윈도우 안에서 콤보가 이어지는 경로를 모사할 수 없다.
+    if (bIsAttacking && bCanCancel == false)
+    {
+        return;
+    }
+
+    bIsAttacking = true;
+    bCanCancel = false;
+    CurrentComboIndex = (CurrentComboIndex + 1) % MeleeDefinition->GetComboCount();
+}
+#endif // WITH_AUTOMATION_WORKER
+

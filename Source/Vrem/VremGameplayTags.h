@@ -1,0 +1,36 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "NativeGameplayTags.h"
+
+namespace FVremGameplayTags
+{
+	// inputs
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Move);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Jump);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Look);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_WeaponPrimary);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_ToggleADS);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Dodge);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Skill_1);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Skill_2);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Weapon_Swap);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Weapon_Reload);
+
+	// states
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Aiming_ADS);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Aiming_Scoped);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Movement_Moving);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Movement_InAir);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_MeleeAttacking);  // 근접 공격 모션 중
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_MeleeMode);		// 손에 근접 무기가 들려 있음
+
+	//items
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Ammo_Heavy);
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_Ammo_Light);
+
+	//item states
+	UE_DECLARE_GAMEPLAY_TAG_EXTERN(Item_State_MagazineAmmo);
+}

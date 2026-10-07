@@ -1,0 +1,33 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "VremGameplayTags.h"
+
+namespace FVremGameplayTags
+{
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Move, "Input.Move", "Movement Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Jump, "Input.Jump", "Jump Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Look, "Input.Look", "Look Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_WeaponPrimary, "Input.WeaponPrimary", "Input_WeaponPrimary Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_ToggleADS, "Input.ToggleADS", "Toggle ADS Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Dodge, "Input.Dodge", "Dodge Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Skill_1, "Input.Skill.1", "Skill slot 1 Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Skill_2, "Input.Skill.2", "Skill slot 2 Input");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Weapon_Swap, "Input.WeaponSwap", "Swap Weapon");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Input_Weapon_Reload, "Input.WeaponReload", "Reload Weapon");
+
+	// states
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Aiming_ADS, "State.Aiming.ADS", "Character is in shoulder ADS mode");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Aiming_Scoped, "State.Aiming.Scoped", "Character is in scope view");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Movement_Moving, "State.Movement.Moving", "Character is moving");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Movement_InAir, "State.Movement.InAir", "Character is in air");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Combat_MeleeAttacking, "State.Combat.MeleeAttacking", "Melee swing animation is playing");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Combat_MeleeMode, "State.Combat.MeleeMode", "Melee weapon is currently held in hand");
+
+	//items
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Ammo_Heavy, "Item.Ammo.Heavy", "Heavy Ammo");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_Ammo_Light, "Item.Ammo.Light", "Light Ammo");
+
+	//item states
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Item_State_MagazineAmmo, "Item.State.MagazineAmmo", "Magazine ammo count saved in weapon item");
+}

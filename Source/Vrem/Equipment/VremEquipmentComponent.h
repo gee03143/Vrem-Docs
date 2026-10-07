@@ -1,0 +1,253 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/ActorComponent.h"
+#include "Net/Serialization/FastArraySerializer.h"
+#include "GameplayTagContainer.h"
+#include "VremEquipmentDefinition.h"
+#include "VremEquipmentComponent.generated.h"
+
+class UVremEquipmentComponent;
+class AVremEquipmentActor;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEquipmentChanged, TSubclassOf<UAnimInstance>, AnimLayerClass);
+
+USTRUCT(BlueprintType)
+struct FVremEquipmentSlotView
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly) 
+	int32 SlotIndex = INDEX_NONE;
+    UPROPERTY(BlueprintReadOnly) 
+	const UVremEquipmentDefinition* Definition = nullptr;
+    UPROPERTY(BlueprintReadOnly) 
+	EEquipmentState State = EEquipmentState::Holstered;
+};
+
+USTRUCT()
+struct FEquipmentEntry : public FFastArraySerializerItem
+{
+    GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<const UVremEquipmentDefinition> EquipmentDefiniton;
+
+	UPROPERTY()
+	EEquipmentState EquipmentState = EEquipmentState::Stowed;
+
+	UPROPERTY()
+	TWeakObjectPtr<AVremEquipmentActor> EquipmentActor;
+
+	UPROPERTY(NotReplicated, Transient)
+	UVremEquipmentInstance* EquipmentInstance = nullptr;
+
+	UPROPERTY()
+	int32 EquipmentIndex = INDEX_NONE;
+
+	FString ToString() const;
+
+	void SetAndApplyEquipmentState(EEquipmentState InEquipmentState);
+	void TryApplyEquipmentStateToInstance();
+
+	bool operator==(const FEquipmentEntry& Other) const
+	{
+		return EquipmentIndex == Other.EquipmentIndex;
+	}
+
+};
+
+USTRUCT()
+struct FEquipmentList : public FFastArraySerializer
+{
+    GENERATED_BODY()
+
+	void SetOwner(UVremEquipmentComponent* InOwner);
+
+	FEquipmentEntry* GetEntryFromIndex(const int32 InIndex)
+	{
+		return const_cast<FEquipmentEntry*>(static_cast<const FEquipmentList*>(this)->GetEntryFromIndex(InIndex));
+	}
+
+	FEquipmentEntry* GetEntryFromEquipmentState(EEquipmentState InEquipmentState)
+	{
+		return const_cast<FEquipmentEntry*>(static_cast<const FEquipmentList*>(this)->GetEntryFromEquipmentState(InEquipmentState));
+	}
+
+	const FEquipmentEntry* GetEntryFromEquipmentState(EEquipmentState InEquipmentState) const
+	{
+		return Entries.FindByPredicate(
+			[InEquipmentState](const FEquipmentEntry& Other)
+			{
+				return InEquipmentState == Other.EquipmentState;
+			});
+	}
+
+	const FEquipmentEntry* GetEntryFromIndex(const int32 InIndex) const
+	{
+		return Entries.FindByPredicate(
+			[InIndex](const FEquipmentEntry& Other)
+			{
+				return InIndex == Other.EquipmentIndex;
+			});
+	}
+
+	int32 FindIndexByDefinition(const UVremEquipmentDefinition* InDefinition)
+	{
+		for (const FEquipmentEntry& Entry : Entries)
+		{
+			if (Entry.EquipmentDefiniton.Get() == InDefinition)
+			{
+				return Entry.EquipmentIndex;
+			}
+		}
+		return INDEX_NONE;
+	}
+
+	int32 GetNextSlotIndexWithSameType(EEquipmentSlotType InSlotType, int32 StartIndex = 0) const;
+
+	void AddEntry(const UVremEquipmentDefinition* InEquipmentDefinition, int32 InIndex);
+	void RemoveEntry(int32 InIndex);
+	int32 GetNumEntries() const { return Entries.Num(); }
+
+	TArray<FVremEquipmentSlotView> CollectEntryViews() const;
+
+	FString ToString() const
+	{
+		FString Result;
+		Result += FString::Printf(TEXT("Equipment Component\n"));
+		Result += FString::Printf(TEXT("Num Entries - %d\n"), Entries.Num());
+
+		for (const FEquipmentEntry& Entry : Entries)
+		{
+			Result += FString::Printf(TEXT(" - %s\n"), *Entry.ToString());
+		}
+
+		return Result;
+	}
+
+	void PostReplicatedAdd(const TArrayView<int32> AddedIndices, int32 FinalSize);
+	void PostReplicatedChange(const TArrayView<int32> ChangedIndices, int32 FinalSize);
+	void PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize);
+
+	void CreateInstanceForEntry(FEquipmentEntry& Entry, const TCHAR* Caller = TEXT("Unknown"));
+
+	void TryBindEquipmentActor(AVremEquipmentActor* InActor);
+
+	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParams)
+    {
+        return FastArrayDeltaSerialize<FEquipmentEntry, FEquipmentList>(Entries, DeltaParams, *this);
+    }
+
+private:
+    UPROPERTY()
+    TArray<FEquipmentEntry> Entries;
+
+	TWeakObjectPtr<UVremEquipmentComponent> OwnerComponent = nullptr;
+	TArray<int32> PendingEquipmentIndices;
+};
+
+template<>
+struct TStructOpsTypeTraits<FEquipmentList> : public TStructOpsTypeTraitsBase2<FEquipmentList>
+{
+	enum
+	{
+		WithNetDeltaSerializer = true,
+	};
+};
+
+UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
+class VREM_API UVremEquipmentComponent : public UActorComponent
+{
+	GENERATED_BODY()
+
+	friend struct FEquipmentList;
+	friend class AVremEquipmentActor;
+
+public:	
+	// Sets default values for this component's properties
+	UVremEquipmentComponent();
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	virtual void InitializeComponent() override;
+
+public:
+	// Blueprint API
+    UFUNCTION(BlueprintCallable, Category="Vrem|Equipment")
+    void RequestSetCurrentWeapon(int32 InSlotIndex, EEquipmentState PrevOnHandDest = EEquipmentState::Stowed, bool bSkipEquipMontage = false);
+
+    UFUNCTION(BlueprintCallable, Category="Vrem|Equipment")
+    void RequestEquipItemByDefinition(const UVremEquipmentDefinition* ItemToEquip, int32 InSlotIndex);
+
+    UFUNCTION(BlueprintCallable, Category="Vrem|Equipment")
+    void RequestUnequipItemBySlot(int32 InSlotIndex);
+
+    UFUNCTION(BlueprintCallable, Category="Vrem|Equipment")
+    void RequestUnequipItemByDefinition(const UVremEquipmentDefinition* InEquipmentDefinition);
+
+	//query
+	UFUNCTION(BlueprintPure, Category="Vrem|Equipment")
+	int32 GetEquipmentItemNum() const { return EquipmentList.GetNumEntries(); }
+	UFUNCTION(BlueprintPure, Category="Vrem|Equipment")
+	AVremEquipmentActor* GetCurrentEquipmentActor() const;
+	UFUNCTION(BlueprintPure, Category="Vrem|Equipment")
+	int32 GetOnHandSlotIndex() const;
+	UFUNCTION(BlueprintPure, Category="Vrem|Equipment")
+	int32 GetHolsteredSlotIndex() const;
+	UFUNCTION(BlueprintPure, Category="Vrem|Equipment")
+	EEquipmentSlotType GetOnHandSlotType() const;
+	UFUNCTION(BlueprintPure, Category="Vrem|Equipment")
+	int32 GetNextSlotIndexWithSameType(EEquipmentSlotType InSlotType, int32 StartIndex = 0) const;
+public:
+	void SetCurrentWeapon(int32 InWeaponSlotIndex, EEquipmentState PrevOnHandDest = EEquipmentState::Stowed, bool bSkipEquipMontage = false);
+	void TryEquipItem(const UVremEquipmentDefinition* ItemToEquip, int32 InSlotIndex);
+	void TryUnequipItem(int32 InSlotIndex);
+	void TryUnequipItem(const UVremEquipmentDefinition* InEquipmentDefinition);
+
+	FString GetEquipmentListString() const { return EquipmentList.ToString(); }
+	TArray<FVremEquipmentSlotView> GetEquipmentEntries() const;
+
+public:
+	UFUNCTION(Server, Reliable)
+	void ServerTryEquipItem(const UVremEquipmentDefinition* ItemToEquip, int32 InSlotIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerTryUnequipItem(int32 InSlotIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetCurrentWeapon(int32 InSlotIndex, EEquipmentState PrevOnHandDest = EEquipmentState::Stowed, bool bSkipEquipMontage = false);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayEquipMontage(const UVremEquipmentDefinition* ItemToEquip);
+
+protected:
+	void OnInstanceStateChanged(EEquipmentState NewState, TSubclassOf<UAnimInstance> AnimLayerClass);
+	void OnInstanceDestroyed(TSubclassOf<UAnimInstance> AnimLayerClass);
+	void OnEquipmentActorReplicated(AVremEquipmentActor* InActor);
+public:
+	DECLARE_MULTICAST_DELEGATE(FOnEquipmentUpdated)
+	FOnEquipmentUpdated OnEquipmentUpdated;
+
+	UPROPERTY(BlueprintAssignable)
+	FOnEquipmentChanged OnEquipmentAttached;
+
+	UPROPERTY(BlueprintAssignable)
+	FOnEquipmentChanged OnEquipmentDetached;
+
+protected:
+	UFUNCTION()
+	void OnRep_EquipmentList();
+
+private:
+	UPROPERTY(ReplicatedUsing = OnRep_EquipmentList)
+	FEquipmentList EquipmentList;
+
+#if WITH_AUTOMATION_WORKER
+public:
+	void SimulateReplicateFrom(const UVremEquipmentComponent* Source);
+	EEquipmentState GetEquipmentStateAtSlot(int32 InSlotIndex) const;
+#endif
+};
