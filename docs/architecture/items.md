@@ -79,7 +79,7 @@ flowchart LR
 장비로 넘어가는 판단은 코드에 없습니다.
 "인벤토리에 아이템이 들어오면 장비 슬롯에 올린다"는 **게임 규칙이라 블루프린트에 있습니다.**
 `OnItemInstanceCreated` 델리게이트를 받아 `ItemFragment_Equipment`를 찾고,
-있으면 `RequestChangeCurrentWeapon`을 호출하는 그래프가 그 일을 합니다.
+있으면 `RequestSetCurrentWeapon`을 호출하는 그래프가 그 일을 합니다.
 [레이어 분리 문서](layering.md#경계를-지키려고-되돌린-것)에서 이 판단이 어떻게 여기까지 내려왔는지 다뤘습니다.
 
 <!-- media: 장비 액터도 블루프린트로 조립한다 -->

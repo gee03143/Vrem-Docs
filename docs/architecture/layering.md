@@ -162,7 +162,7 @@ UVremItemInstance* ItemInstance = nullptr;
 |`ServerDodge`|없음. `CanDodge()` 를 호출하지 않습니다|
 |`ServerActivateSkill`|슬롯·정의 유효성만 봅니다. 쿨다운은 검사하지 않습니다|
 
-구체적으로 어떻게 검증하는지는 [전투 문서](combat.md#서버는-클라이언트의-요청을-믿지-않는다)에 적었습니다.
+구체적으로 어떻게 검증하는지는 [전투 문서](combat.md#원거리-사격)에 적었습니다.
 
 ## 이 문서에서 쓰는 말
 

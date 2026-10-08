@@ -4,6 +4,8 @@ Vrem 프로젝트의 공개용 문서 레포입니다. 사양 문서와 원본 �
 
 문서가 인용하는 C++ 코드는 `Source/`에 함께 두었습니다. 원본 프로젝트의 **`9d396a3` (2026-10-07)** 시점 스냅샷이며, 에셋은 라이선스상 포함하지 않아 이 저장소만으로는 빌드되지 않습니다.
 
+사용한 외부 에셋의 출처와 라이선스는 [docs/license.txt](docs/license.txt)에 적었습니다.
+
 ## Vrem
 
 Unreal Engine 5.7 기반 3인칭 슈팅 액션 프로토타입.
@@ -61,8 +63,6 @@ DOREPLIFETIME_CONDITION(UVremInventoryComponent, InventoryItems, COND_OwnerOnly)
 // 손에 든 무기는 모두에게 그려져야 한다
 DOREPLIFETIME(UVremEquipmentComponent, EquipmentList);
 ```
-
-사격 경로에는 서버가 클라이언트 요청을 다시 판단하는 검증을 추가했습니다.
 
 ## 시스템별 상세 문서
 
